@@ -110,7 +110,7 @@ class FrozenCLIPEmbedder(AbstractEncoder):
         self.transformer = CLIPTextModel.from_pretrained(version)
         self.device = device
         self.max_length = max_length
-        if freeze:
+        if freeze: #!!!可能關鍵在這裡
             self.freeze()
         self.layer = layer
         self.layer_idx = layer_idx
@@ -119,6 +119,7 @@ class FrozenCLIPEmbedder(AbstractEncoder):
             assert 0 <= abs(layer_idx) <= 12
 
     def freeze(self):
+        # 這裡是有被走道的
         self.transformer = self.transformer.eval()
         #self.train = disabled_train
         for param in self.parameters():
@@ -128,7 +129,9 @@ class FrozenCLIPEmbedder(AbstractEncoder):
         batch_encoding = self.tokenizer(text, truncation=True, max_length=self.max_length, return_length=True,
                                         return_overflowing_tokens=False, padding="max_length", return_tensors="pt")
         tokens = batch_encoding["input_ids"].to(self.device)
-        outputs = self.transformer(input_ids=tokens, output_hidden_states=self.layer=="hidden")
+        outputs = self.transformer(input_ids=tokens, output_hidden_states=self.layer=="hidden") # 這是真正的目標
+        # print("inside CLIP", torch.is_grad_enabled())
+        # print(outputs.hidden_states.requires_grad) # None                
         if self.layer == "last":
             z = outputs.last_hidden_state
         elif self.layer == "pooled":

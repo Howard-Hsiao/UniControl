@@ -434,11 +434,13 @@ class DDPM(pl.LightningModule):
         return x
 
     def shared_step(self, batch):
-        x = self.get_input(batch, self.first_stage_key)
+        #!!!這邊沒有
+        x = self.get_input(batch, self.first_stage_key) #!!!
         loss, loss_dict = self(x)
         return loss, loss_dict
 
     def training_step(self, batch, batch_idx):
+        # print("JJJJJJJJJJJJJJJJJJJJJJ Inside training step")
         for k in self.ucg_training:
             p = self.ucg_training[k]["p"]
             val = self.ucg_training[k]["val"]
@@ -673,7 +675,9 @@ class LatentDiffusion(DDPM):
     def get_learned_conditioning(self, c):
         if self.cond_stage_forward is None:
             if hasattr(self.cond_stage_model, 'encode') and callable(self.cond_stage_model.encode):
+                # 走這條
                 c = self.cond_stage_model.encode(c)
+                # c 沒有 require_grad
                 if isinstance(c, DiagonalGaussianDistribution):
                     c = c.mode()
             else:
@@ -772,17 +776,20 @@ class LatentDiffusion(DDPM):
 
         return fold, unfold, normalization, weighting
 
-    @torch.no_grad()
+    # @torch.no_grad() # 必經之路
     def get_input(self, batch, k, return_first_stage_outputs=False, force_c_encode=False,
                   cond_key=None, return_original_cond=False, bs=None, return_x=False):
         # batch['jpg'] -> [4, 512, 512, 3]
         # batch['txt'] -> list of 4
         # batch['hint'] -> [4, 512, 512, 3]
-        
+        # 找出 input 出現 prompt 的時候到底出了什麼錯沒有 require_grad
+        # print("MMMMMMMMMMMMMMMMMMMMMMMMMMMMM get_input(LatentDiffusion)")
+        # 必經之路
         x = super().get_input(batch, k)
         if bs is not None:
             x = x[:bs]
         x = x.to(self.device)
+        # first_stage_model 是 vae
         encoder_posterior = self.encode_first_stage(x)
         z = self.get_first_stage_encoding(encoder_posterior).detach()
 
@@ -799,7 +806,10 @@ class LatentDiffusion(DDPM):
             else:
                 xc = x
             if not self.cond_stage_trainable or force_c_encode:
+                # !!!cond_stage_model 是處理 prompt 的，探詢為甚麼經過 get_learned_conditioning 後拿不到 required_grad
                 if isinstance(xc, dict) or isinstance(xc, list):
+                    # 走這條
+                    # cond_stage_model 是處理 prompt 的
                     c = self.get_learned_conditioning(xc)
                 else:
                     c = self.get_learned_conditioning(xc.to(self.device))
@@ -827,6 +837,9 @@ class LatentDiffusion(DDPM):
             out.extend([x])
         if return_original_cond:
             out.append(xc)
+        # print("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+        # print(out)
+        # print("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
         return out
 
     @torch.no_grad()
@@ -845,22 +858,32 @@ class LatentDiffusion(DDPM):
         return self.first_stage_model.encode(x)
 
     def shared_step(self, batch, **kwargs):
+        # print("KKKKKKKKKKKKKKKKKKK shared_step")
         x, c = self.get_input(batch, self.first_stage_key)
-        loss = self(x, c)
+        loss = self(x, c) # roy必經之路!!!
         return loss
 
     def forward(self, x, c, *args, **kwargs):
+        # print("roy----------------------------- forward func of Latent Diffuser")
+        # print(type(x))
+        # print(x.shape)
+        # print(c.keys())
         t = torch.randint(0, self.num_timesteps, (x.shape[0],), device=self.device).long()
         if self.model.conditioning_key is not None:
+            # print("hello", self.model.conditioning_key) # self.model.conditioning_key = crossattn
             assert c is not None
             if self.cond_stage_trainable:
                 c = self.get_learned_conditioning(c)
             if self.shorten_cond_schedule:  # TODO: drop this option
                 tc = self.cond_ids[t].to(self.device)
                 c = self.q_sample(x_start=c, t=tc, noise=torch.randn_like(c.float()))
+        
+        # print(self.p_losses(x, c, t, *args, **kwargs))
+        # print(x.require_grad)
         return self.p_losses(x, c, t, *args, **kwargs)
 
     def apply_model(self, x_noisy, t, cond, return_ids=False):
+        # 這邊不會走-
         if isinstance(cond, dict):
             # hybrid case, cond is expected to be a dict
             pass
@@ -869,7 +892,6 @@ class LatentDiffusion(DDPM):
                 cond = [cond]
             key = 'c_concat' if self.model.conditioning_key == 'concat' else 'c_crossattn'
             cond = {key: cond}
-
         x_recon = self.model(x_noisy, t, **cond)
 
         if isinstance(x_recon, tuple) and not return_ids:
@@ -896,16 +918,19 @@ class LatentDiffusion(DDPM):
         return mean_flat(kl_prior) / np.log(2.0)
 
     def p_losses(self, x_start, cond, t, noise=None):
+        # 必經之路
+        # print("------------------p_losses")
+        # print("x_start", x_start)
+        # print("cond", cond)
         noise = default(noise, lambda: torch.randn_like(x_start))
         x_noisy = self.q_sample(x_start=x_start, t=t, noise=noise)
         model_output = self.apply_model(x_noisy, t, cond)
-
         loss_dict = {}
         prefix = 'train' if self.training else 'val'
 
         if self.parameterization == "x0":
             target = x_start
-        elif self.parameterization == "eps":
+        elif self.parameterization == "eps": # 走這邊
             target = noise
         elif self.parameterization == "v":
             target = self.get_v(x_start, noise, t)
@@ -913,10 +938,14 @@ class LatentDiffusion(DDPM):
             raise NotImplementedError()
 
         loss_simple = self.get_loss(model_output, target, mean=False).mean([1, 2, 3])
+        # print("loss_simple", loss_simple)
         loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
-
         logvar_t = self.logvar[t].to(self.device)
+        # print("^^^^^^^^^^^^logvar_t", logvar_t)
         loss = loss_simple / torch.exp(logvar_t) + logvar_t
+        # print("^^^^^^^^^^^^loss", loss)
+        # print("^^^^^^^^^^^^loss_dict", loss_dict)
+        # loss.backward()
         # loss = loss_simple / torch.exp(self.logvar) + self.logvar
         if self.learn_logvar:
             loss_dict.update({f'{prefix}/loss_gamma': loss.mean()})
@@ -1338,7 +1367,10 @@ class DiffusionWrapper(pl.LightningModule):
             out = self.diffusion_model(xc, t)
         elif self.conditioning_key == 'crossattn':
             if not self.sequential_cross_attn:
+                # print("@@@@@@@@@@@@@@@@@@@@", c_crossattn.shape)
                 cc = torch.cat(c_crossattn, 1)
+                # print("##################", cc.shape)
+                
             else:
                 cc = c_crossattn
             out = self.diffusion_model(x, t, context=cc)

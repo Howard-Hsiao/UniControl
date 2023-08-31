@@ -129,6 +129,7 @@ def checkpoint(func, inputs, params, flag):
 class CheckpointFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, run_function, length, *args):
+        # print("KKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKKK") #!!!
         ctx.run_function = run_function
         ctx.input_tensors = list(args[:length])
         ctx.input_params = list(args[length:])
@@ -137,6 +138,7 @@ class CheckpointFunction(torch.autograd.Function):
                                    "cache_enabled": torch.is_autocast_cache_enabled()}
         with torch.no_grad():
             output_tensors = ctx.run_function(*ctx.input_tensors)
+        # print("???????????????", output_tensors.requires_grad) #!!!
         return output_tensors
 
     @staticmethod

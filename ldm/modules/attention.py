@@ -330,6 +330,9 @@ class SpatialTransformer(nn.Module):
 
     def forward(self, x, context=None):
         # note: if no context is given, cross-attention defaults to self-attention
+        # print("oooooooooooooooooooooooooooooooo", flush=True)
+        # x.mean().backward()
+        # print("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", flush=True)
         if not isinstance(context, list):
             context = [context]
         b, c, h, w = x.shape

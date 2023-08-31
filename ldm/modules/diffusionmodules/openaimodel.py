@@ -87,13 +87,27 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
     """
 
     def forward(self, x, emb, context=None):
-        for layer in self:
+        # print("hello")
+        for i, layer in enumerate(self):
             if isinstance(layer, TimestepBlock):
+                # print(i, "+timeEmb")
+                # x.sum().backward()
+                # print("outtttttttttttttttttttttt 1")
+                # print(layer)
                 x = layer(x, emb)
+                # print("2222222222222", flush=True)
+                # print(x[0])
+                # print("outtttttttttttttttttttttt 2")
+                # x.sum().backward()
             elif isinstance(layer, SpatialTransformer):
+                # print(i, "+have context---------------")
                 x = layer(x, context)
+                # print("context_rg", context.requires_grad)
+                # print("x_rg", x.requires_grad)
             else:
+                # print(i, "+normal Layer")
                 x = layer(x)
+        # x.sum().backward()
         return x
 
 
@@ -262,26 +276,52 @@ class ResBlock(TimestepBlock):
 
 
     def _forward(self, x, emb):
+        # print("hello~~~~~~~~~~~~~~~~~", x.requires_grad, emb.requires_grad)
         if self.updown:
+            # print("$$$$$$$$$$$$$$$$$$$$$$$$$$up")
             in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
             h = in_rest(x)
             h = self.h_upd(h)
             x = self.x_upd(x)
             h = in_conv(h)
         else:
+            # print("$$$$$$$$$$$$$$$$$$$$$$$$$$down")
             h = self.in_layers(x)
         emb_out = self.emb_layers(emb).type(h.dtype)
+        if emb.requires_grad:
+            # emb_out.sum().backward() # 這邊可以 backward
+            # h.sum().backward() # 這邊可以 backward
+            pass
+            
         while len(emb_out.shape) < len(h.shape):
             emb_out = emb_out[..., None]
         if self.use_scale_shift_norm:
+            # print("&&&&&&&&&&&&&&&&&&&&&&&up")
             out_norm, out_rest = self.out_layers[0], self.out_layers[1:]
             scale, shift = th.chunk(emb_out, 2, dim=1)
             h = out_norm(h) * (1 + scale) + shift
             h = out_rest(h)
         else:
+            # print("&&&&&&&&&&&&&&&&&&&&&&&down")
             h = h + emb_out
+            # if emb.requires_grad:
+            #     h.sum().backward() # 這邊可以 backward
+            #     pass
             h = self.out_layers(h)
-        return self.skip_connection(x) + h
+            # if emb.requires_grad:
+            #     h.sum().backward() # 這邊可以 backward
+            #     pass        # (self.skip_connection(x) + h).sum().backward()
+        # print(">>>>>>>>>>>>>>>>>>>>>>>>>>")
+        if emb.requires_grad:
+            # print("hihihihihihihihi 1")
+            # (self.skip_connection(x) + h).sum().backward() # 這邊可以 backward
+            # print("hihihihihihihihi 2")
+            pass
+    
+        a = self.skip_connection(x) + h
+        # print("11111111111111111")
+        # print(a[0])
+        return a
 
 
 class AttentionBlock(nn.Module):

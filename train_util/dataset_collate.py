@@ -12,10 +12,11 @@ sys.path.append('./')
 import torch
 import re
 import collections.abc as container_abcs
-from torch._six import string_classes
+# from torch._six import string_classes
 import pdb
 
 int_classes = int 
+string_classes = str
 
 _use_shared_memory = False
 r"""Whether to use shared memory in default_collate"""

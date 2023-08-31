@@ -64,26 +64,72 @@ def modulated_conv2d(
     
 class ControlledUnetModel(UNetModel):
     def forward(self, x, timesteps=None, context=None, control=None, only_mid_control=False, **kwargs):
+        # x 最初是是 noise
+        # 必經之路
+        # print("Yun", context.shape)
+        # print("Yun", context.requires_grad)
+        
+        # context 是文字 prompt
         hs = []
         with torch.no_grad():
             t_emb = timestep_embedding(timesteps, self.model_channels, repeat_only=False)
             emb = self.time_embed(t_emb)
             h = x.type(self.dtype)
+            count = 0
             for module in self.input_blocks:
+                # print(f"{count}*********************************")
+                # print(module)
                 h = module(h, emb, context)
+                # if count == 0:
+                #     h.sum().backward()                
                 hs.append(h)
+                count += 1
+            # 在這個地方是沒有 requires_grad 的
             h = self.middle_block(h, emb, context)
-
+            # 在這個地方是沒有 requires_grad 的
+            
+        # h 是最終的結果
+        # hs 是集合了 h 經過了每個 input_block 後的輸出的 list
+        
+        # h.sum().backward() # 這邊是沒有 require_grads 的錯誤
         if control is not None:
-            h += control.pop()
-
+            h += control.pop() #!!! control[-1] 是關鍵
+        
+        # print("haha", control[0].requires_grad)
+        # print("haha", control[0].shape)
+        # for i in range(len(control)):
+        #     print(i)
+        #     if i in [1, 2]:
+        #         continue
+        #     control[i].sum().backward() # 不會出事
+        # control[-1].sum().backward() # 會出事喔
+        # 基本上除了idx==0都會出事
+        
+        # 從上面那一句開始出事，出現 One of the differentiated Tensors does not require grad
+        # print("Testttttt", h.requires_grad, h.shape)
+        # h.sum().backward()
+        
+        # 這一塊是出事的地方
         for i, module in enumerate(self.output_blocks):
+            # print(f"{i} out/////////////////////////")
+            # for k in module:
+            #     print(k)
+            #     print("k.requires_grad", k.requires_grad)
             if only_mid_control or control is None:
+                # print("up &&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
                 h = torch.cat([h, hs.pop()], dim=1)
             else:
-                h = torch.cat([h, hs.pop() + control.pop()], dim=1)
+                # 走這邊
+                # print("down &&&&&&&&&&&&&&&&&&&&&&&&&&&&&&")
+                # print(h.requires_grad, h.shape)
+                h = torch.cat([h, hs.pop()], dim=1)
+                # print(h.requires_grad, h.shape)
+                # h = torch.cat([h, hs.pop() + control.pop()], dim=1)
             h = module(h, emb, context)
-
+            # print(module)
+            # if i == 0: #!!!
+            #     print(h.shape)
+                # h.sum().backward()
         h = h.type(x.dtype)
         return self.out(h)
 
@@ -361,6 +407,7 @@ class ControlNet(nn.Module):
         hint -> 4, 3, 512, 512
         context - > 4, 77, 768
         '''
+
         BS = 1 # x.shape[0], one batch one task
         BS_Real = x.shape[0]
         if kwargs is not None:
@@ -383,21 +430,29 @@ class ControlNet(nn.Module):
         # self.input_hint_block_zeroconv_1[1] is helful in the early stage training
         
         guided_hint += self.input_hint_block_zeroconv_1[0].bias.unsqueeze(0).unsqueeze(2).unsqueeze(3)
-
+        # print("guided_hint`", guided_hint.shape, guided_hint.requires_grad) # torch.Size([1, 320, 32, 32]) True
+        
         outs = []
         h = x.type(self.dtype)
-        for module, zero_conv, task_hyperlayer in zip(self.input_blocks, self.zero_convs, self.task_id_layernet):
+        for i, (module, zero_conv, task_hyperlayer) in enumerate(zip(self.input_blocks, self.zero_convs, self.task_id_layernet)):
             if guided_hint is not None:
+                # 只有第一個是 Up
+                # print(i, "up--------------------", h.requires_grad)
                 h = module(h, emb, context)
                 try:
-                    h += guided_hint
+                    h += guided_hint #第一不一定要+，不然的話沒有 requires_grad
+                    pass
                 except RuntimeError:
                     pdb.set_trace()
                 guided_hint = None
             else:
-                h = module(h, emb, context)            
+                # 其他都是 down
+                # print(i, "down-------------------", h.requires_grad)
+                # print(module)
+                h = module(h, emb, context)
             outs.append(modulated_conv2d(h, zero_conv[0].weight, task_hyperlayer(task_id_emb).repeat(BS_Real, 1)) + zero_conv[0].bias.unsqueeze(0).unsqueeze(2).unsqueeze(3))
-        
+            
+            # h.sum().backward() # 到了 idx == 1 時，就會出錯
         h = self.middle_block(h, emb, context)
         outs.append(self.middle_block_out(h, emb, context))
 
@@ -418,7 +473,7 @@ class ControlLDM(LatentDiffusion):
         self.only_mid_control = only_mid_control
         self.control_scales = [1.0] * 13
         
-    @torch.no_grad()
+    # @torch.no_grad() #!!!必經之路
     def get_input(self, batch, k, bs=None, *args, **kwargs):
         
         '''
@@ -448,20 +503,48 @@ class ControlLDM(LatentDiffusion):
         task_dic['feature'] = c_task
         return x, dict(c_crossattn=[c], c_concat=[control], task=task_dic)
 
-    def apply_model(self, x_noisy, t, cond, *args, **kwargs):
+    def apply_model(self, x_noisy, t, cond, *args, **kwargs):#被呼叫了兩次，去找一下為甚麼
+        # roy必經之路，關鍵就在這裡了
         assert isinstance(cond, dict)
+        # cond["c_crossattn"][0].shape: torch.Size([1, 77, 768])，可能是 prompt
+        # cond["c_concat"][0].shape: torch.Size([1, 3, 256, 256])，可能是圖片
+        # cond["task"]["name"]: control_grayscale 
+        # cond["task"]["feature"].shape: torch.Size([1, 1, 768])，可能是任務 prompt
+
+        # t: tensor([119], device='cuda:0')
+
         task_name = cond['task'] # dict['name', 'feature']
         diffusion_model = self.model.diffusion_model # -> ControlledUnetModel
 
-        cond_txt = torch.cat(cond['c_crossattn'], 1)
+        # before a list contain 1 value: [1, 77, 768]
+        cond_txt = torch.cat(cond['c_crossattn'], 1) 
+        # after: [1, 77, 768]
+
+        # cond_txt.sum().backward() OK
+        # print("123555555555555555555555555555555555")
+        # print("TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT")
+        # target = cond_txt
+        # target = target.sum()
+        # print(target.backward())
+        # print("777777777777777777777777777777")
         
         if cond['c_concat'] is None:
             eps = diffusion_model(x=x_noisy, timesteps=t, context=cond_txt, control=None, only_mid_control=self.only_mid_control)
         else:
-            control = self.control_model(x=x_noisy, hint=torch.cat(cond['c_concat'], 1), timesteps=t, context=cond_txt, task=task_name)
+            # 必經之路
+            control = self.control_model(x=x_noisy, hint=torch.cat(cond['c_concat'], 1), timesteps=t, context=cond_txt, task=task_name) 
+            # print("control-----------------", type(control), len(control), control[0].shape) # <class 'list'> 13 torch.Size([1, 320, 32, 32])
             control = [c * scale for c, scale in zip(control, self.control_scales)]
+            # print([i.requires_grad for i in control])
+            # control[0].sum().backward() #!!! OK
+            # self.model.diffusion_model # -> ControlledUnetModel
             eps = diffusion_model(x=x_noisy, timesteps=t, context=cond_txt, control=control, only_mid_control=self.only_mid_control)
 
+            # num_trainable_parameters = sum(p.numel() for p in self.control_model.parameters() if p.requires_grad)
+            # print("----------------->self.control_model:", num_trainable_parameters)
+            # num_trainable_parameters = sum(p.numel() for p in diffusion_model.parameters() if p.requires_grad)
+            # print("----------------->diffusion_model:", num_trainable_parameters)
+            # eps.sum().backward() # grad_fn=<ConvolutionBackward0> One of the differentiated Tensors does not require grad
         return eps
 
     @torch.no_grad()
